@@ -1,0 +1,80 @@
+name: Auto-Sync Forks
+
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+jobs:
+  sync-forks:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PAT }}
+
+      - name: Setup Git
+        run: |
+          git config --global user.name "phong711-bot"
+          git config --global user.email "phongtran1171984@gmail.com"
+
+      - name: List and Sync Forks
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT }}
+        run: |
+          echo "🔍 Fetching all forks..."
+          repos=$(gh repo list phong711 --limit 100 --json name,isFork -q '.[] | select(.isFork == true) | .name')
+          echo "Found $(echo "$repos" | wc -l) forks"
+          
+          for repo in $repos; do
+            echo ""
+            echo "📦 Syncing: $repo"
+            
+            upstream_url=$(gh repo view phong711/$repo --json parent -q '.parent.url // empty')
+            
+            if [ -z "$upstream_url" ]; then
+              echo "⚠️ No upstream found, skipping"
+              continue
+            fi
+            
+            echo "Upstream: $upstream_url"
+            
+            git clone "https://x-access-token:${{ secrets.PAT }}@github.com/phong711/$repo.git" /tmp/$repo 2>&1 || {
+              echo "❌ Failed to clone $repo"
+              continue
+            }
+            
+            cd /tmp/$repo
+            git remote add upstream "$upstream_url" 2>/dev/null || true
+            git fetch upstream 2>&1 || {
+              echo "⚠️ Failed to fetch upstream"
+              cd /
+              rm -rf /tmp/$repo
+              continue
+            }
+            
+            default_branch=$(gh repo view phong711/$repo --json defaultBranchRef -q '.defaultBranchRef.name // main')
+            echo "Default branch: $default_branch"
+            
+            git merge "upstream/$default_branch" --no-edit 2>&1 || {
+              echo "⚠️ Merge conflict, skipping"
+              cd /
+              rm -rf /tmp/$repo
+              continue
+            }
+            
+            if git diff --quiet; then
+              echo "✅ Already up to date"
+            else
+              git push origin "$default_branch" 2>&1 && echo "✅ Synced" || echo "❌ Push failed"
+            fi
+            
+            cd /
+            rm -rf /tmp/$repo
+          done
